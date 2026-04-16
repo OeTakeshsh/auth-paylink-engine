@@ -1,0 +1,25 @@
+ImportError while loading conftest '/home/usnew/pr/p_api/tests/conftest.py'.
+conftest.py:3: in <module>
+    from app.main import app
+../app/main.py:4: in <module>
+    from app.core.database import engine, Base
+../app/core/database.py:1: in <module>
+    from app.core.config import settings
+../app/core/config.py:15: in <module>
+    settings = Settings()
+               ^^^^^^^^^^
+../../../.cache/pypoetry/virtualenvs/backend-app-yvppZrTl-py3.14/lib/python3.14/site-packages/pydantic_settings/main.py:242: in __init__
+    super().__init__(**__pydantic_self__.__class__._settings_build_values(sources, init_kwargs))
+E   pydantic_core._pydantic_core.ValidationError: 4 validation errors for Settings
+E   secret_key
+E     Field required [type=missing, input_value={}, input_type=dict]
+E       For further information visit https://errors.pydantic.dev/2.12/v/missing
+E   algorithm
+E     Field required [type=missing, input_value={}, input_type=dict]
+E       For further information visit https://errors.pydantic.dev/2.12/v/missing
+E   access_token_expire_minutes
+E     Field required [type=missing, input_value={}, input_type=dict]
+E       For further information visit https://errors.pydantic.dev/2.12/v/missing
+E   database_url
+E     Field required [type=missing, input_value={}, input_type=dict]
+E       For further information visit https://errors.pydantic.dev/2.12/v/missing

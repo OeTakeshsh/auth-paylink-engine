@@ -1,0 +1,6 @@
+{
+  "venvPath": "/home/usnew/.cache/pypoetry/virtualenvs",
+  "venv": "backend-app-5X8VmLiV-py3.14",
+  "extraPaths": ["./app"],
+  "pythonVersion" : "3.14"
+}

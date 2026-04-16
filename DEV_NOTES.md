@@ -1,0 +1,445 @@
+[Fecha] 03/30/2026
+
+## Problema
+JWT permite acceso a tokens (refresh/access) de tipo incorrecto según endpoint.
+
+## Causa
+Mala configuración inicial, ausencia de validación antes del endpoint.
+
+## Solución
+- Se agregó un endpoint para refresh tokens.
+- Se agregaron validaciones en `auth.py` para el método `create_user()`.
+- Se agregó una validación en endpoint `/me` para evitar acceso con refresh tokens.
+
+## Nota
+Refresh Token sigue permitiendo reusarse, corregir esto a futuro.
+
+---
+
+[Fecha] 03/31/2026
+
+## Problema
+Importaciones rotas en `routes/users.py` y falta total de endpoint + lógica para almacenar los refresh tokens hasheados en la base de datos (`store_refresh_token`, `verify_refresh_token` y `UserToken`).
+
+## Causa
+- Imports incorrectos/duplicados y referencias a funciones que no existían en `core/auth.py`.
+- El endpoint `/refresh` existía solo de nombre pero no tenía la lógica de validación ni persistencia del hash del refresh token.
+- No se guardaba ningún refresh token en la tabla `user_tokens` → no había revocación ni control de sesión.
+
+## Solución
+- Se corrigieron todas las importaciones en `app/routes/users.py`.
+- Se completó y limpió `app/core/auth.py` con:
+  - Modelo `UserToken`.
+  - Funciones `store_refresh_token` y `verify_refresh_token`.
+  - `decode_refresh_token` centralizado.
+  - Creación segura de access y refresh tokens.
+- Se implementó correctamente el endpoint `/users/refresh` con validación de hash en BD.
+- Ahora el flujo completo funciona: login → guarda hash del refresh + devuelve ambos tokens.
+
+## Nota de seguridad (pendiente)
+Refresh Token todavía permite reutilización (reuse attack). Próxima mejora: implementar Refresh Token Rotation (invalidar el usado y emitir uno nuevo en cada `/refresh`).
+
+---
+
+[Fecha] 03/31/2026
+
+## Problema
+Falta de protección en rutas y dependencia `get_current_user` no implementada.
+
+## Causa
+- No existía `get_current_user()` para extraer usuario desde access token.
+- Faltaba `get_db()` en `database.py` para inyectar sesiones.
+- Endpoints no tenían autenticación.
+
+## Solución
+- Se creó `get_db()` en `core/database.py`.
+- Se creó `get_current_user()` en `core/dependencies.py` con decode de access token y búsqueda en BD.
+- Se protegió endpoint `/users/me` con `Depends(get_current_user)`.
+
+## Estado actual
+- `/me` requiere token válido.
+- 401 si token falta, expira o es inválido.
+- Dependencia lista para proteger más endpoints.
+
+---
+
+[Fecha] 04/01/2026
+
+## Problema
+Alembic no podía generar ni aplicar migraciones por incompatibilidad con el motor asíncrono de SQLAlchemy (error `MissingGreenlet`).
+
+## Causa
+- El proyecto usa `create_async_engine` con `asyncpg`.
+- Alembic, por defecto, solo funciona con motores síncronos.
+
+## Solución
+- Se modificó `migrations/env.py` para que Alembic utilice un motor síncrono (`create_engine` con `psycopg2`) solo durante las migraciones.
+- Se generó la migración automática con `alembic revision --autogenerate -m "fix created_at timezone"`.
+- Se aplicó la migración con `alembic upgrade head`, actualizando la columna `created_at` de la tabla `user_tokens` a `TIMESTAMP WITH TIME ZONE` con valor por defecto `now()`.
+
+## Resultado
+- La base de datos está sincronizada con los modelos.
+- La aplicación sigue funcionando con `asyncpg` sin cambios.
+- El flujo de migraciones ahora es compatible con el proyecto.
+
+---
+
+[Fecha] 07/04/2026
+
+## Problema
+Los tests de integración fallaban por múltiples razones: falta de configuración de pytest-asyncio, errores de conexión a PostgreSQL (host `postgres_db` no resuelto desde el host), problemas con variables de entorno no cargadas, y falta de creación de tablas en la base de datos de pruebas.
+
+## Causa
+- El archivo `tests/conftest.py` no cargaba `load_dotenv()` antes de importar `app.main`, causando errores de validación en `Settings`.
+- Se usaba `@pytest.fixture` en lugar de `@pytest_asyncio.fixture` para fixtures asíncronas.
+- El cliente HTTP con `httpx.AsyncClient` necesitaba `ASGITransport(app=app)` para probar FastAPI.
+- La base de datos de pruebas apuntaba a PostgreSQL con nombre de host `postgres_db` (solo válido dentro de Docker), generando errores de resolución de DNS.
+- Se intentó usar Alembic para crear las tablas de prueba, pero las migraciones no se generaban correctamente por falta de importación de modelos en `env.py` y conflictos de permisos.
+- Además, se presentó un error de asyncio `Future attached to a different loop` al usar fixtures con `scope="session"`.
+
+## Solución
+- Se reordenó `conftest.py` para definir variables de entorno (`os.environ`) **antes** de cualquier importación de la app, eliminando la dependencia del archivo `.env` para los tests.
+- Se cambió a `@pytest_asyncio.fixture` para la fixture `client`.
+- Se reemplazó `httpx.AsyncClient(app=app)` por `ASGITransport(app=app)`.
+- Se optó por usar **SQLite en memoria** (`sqlite+aiosqlite:///:memory:`) como base de datos de pruebas, eliminando la necesidad de PostgreSQL y los problemas de red.
+- Se agregó `aiosqlite` como dependencia de desarrollo.
+- Se configuró una fixture `setup_db` con `scope="session"` que crea las tablas una sola vez, y una fixture `clean_db` con `autouse=True` que limpia los datos entre tests (sin destruir las tablas).
+- Se corrigió el error del loop asíncrono usando un único engine compartido y evitando `scope="function"` con recreación de tablas.
+- Se completaron los tests unitarios e integración para los endpoints de autenticación (registro, login, refresh, logout, perfil, flujo completo).
+- Se ajustaron los headers de autorización en los tests para usar `Authorization: Bearer {token}` con el espacio correcto.
+
+## Nota
+Los tests ahora pasan completamente (10 tests exitosos) y la suite se ejecuta en menos de 3 segundos. El uso de SQLite en memoria para pruebas es una práctica común y acelera el desarrollo, aunque se recomienda mantener un entorno de integración con PostgreSQL para validar características específicas del motor. Los tests cubren los flujos principales de autenticación y servirán como red de seguridad para futuros cambios.
+
+---
+
+[Fecha] 08/04/2026
+
+## Problema
+La aplicación manejaba sesión única (un solo dispositivo activo por usuario), lo cual no es el comportamiento más común en aplicaciones web modernas donde los usuarios esperan estar conectados desde múltiples dispositivos (web, móvil, tablet) simultáneamente.
+
+## Causa
+- La función `store_refresh_token` en `app/core/auth.py` realizaba un `DELETE` de todos los refresh tokens anteriores del usuario antes de insertar uno nuevo, limitando la sesión a un solo token activo.
+- No se almacenaba información del dispositivo (nombre, IP) ni se registraba el último uso de cada sesión.
+- No existían endpoints para listar ni revocar sesiones activas remotamente.
+- Además, el test `test_refresh_token` fallaba porque el nuevo access token generado era idéntico al original (falta de unicidad en el payload del JWT).
+
+## Solución
+- Se modificó la tabla `user_tokens` agregando las columnas:
+  - `device_name` (VARCHAR 100) – nombre del dispositivo (ej. "Chrome en Windows").
+  - `ip_address` (VARCHAR 45) – dirección IP del cliente.
+  - `last_used_at` (TIMESTAMP WITH TIME ZONE) – última vez que se usó el refresh token.
+- Se cambió `store_refresh_token` para **insertar** un nuevo token sin eliminar los anteriores, permitiendo múltiples tokens activos por usuario.
+- Se capturó en el endpoint `/login` el `User-Agent` y la IP del cliente (usando `fastapi.Request`) y se almacenan junto con el refresh token.
+- Se agregaron dos nuevos endpoints protegidos:
+  - `GET /users/sessions` – lista todas las sesiones activas del usuario autenticado.
+  - `DELETE /users/sessions/{session_id}` – revoca una sesión específica (logout remoto).
+- Se mejoró `verify_refresh_token` para que solo considere tokens no revocados (`revoked == False`).
+- Para garantizar unicidad de cada token (y que el test `test_refresh_token` pase), se añadió el campo `jti` (JWT ID) con un UUID aleatorio en el payload de access y refresh tokens.
+- Se corrigió el test `test_refresh_token` (que ahora pasa sin necesidad de `sleep`).
+
+## Estado actual
+- La API permite múltiples sesiones simultáneas por usuario.
+- Cada login genera un nuevo refresh token sin invalidar los anteriores.
+- El logout revoca únicamente el token utilizado.
+- El usuario puede listar y cerrar sesiones remotamente desde otros dispositivos.
+- Todos los tests (10) pasan exitosamente.
+- La seguridad mejora gracias al `jti` único por token y la posibilidad de revocación individual.
+
+## Pendiente / Mejoras futuras
+- Implementar límite máximo de sesiones activas por usuario (ej. 5 dispositivos).
+- Añadir rotación de refresh tokens (emitir uno nuevo en cada `/refresh` y revocar el usado).
+- Notificar al usuario por email cuando se inicia una nueva sesión en un dispositivo desconocido.
+
+---
+
+[Fecha] 08/04/2026 (2)
+
+## Problema
+La aplicación carecía de un sistema de logging estructurado que permitiera rastrear peticiones, depurar errores y auditar eventos de autenticación en producción.
+
+## Causa
+- No se registraban eventos de entrada/salida de los endpoints.
+- No existía un identificador de correlación (correlation ID) para seguir una petición a través de los logs.
+- Los errores y advertencias no quedaban registrados sistemáticamente.
+
+## Solución
+- Se implementó un sistema de logging usando el módulo `logging` estándar de Python.
+- Se agregó el middleware `CorrelationIdMiddleware` que genera/extrae un `X-Correlation-ID` (UUID) y lo propaga mediante `contextvars`.
+- Se configuró un `CorrelationIdFilter` para añadir el correlation ID a cada registro de log.
+- Se añadieron logs informativos (`info`) y de advertencia (`warning`) en todos los endpoints de autenticación: login, logout, refresh, create_user, get_me.
+- Se registran intentos, éxitos y fallos (con detalles como email, user_id, causa del error).
+- La salida de logs se envía a la consola (stdout) con formato: `timestamp - name - level - [correlation_id] - message`.
+
+## Resultado
+- Ahora es posible rastrear una petición completa desde que entra hasta que sale gracias al correlation ID.
+- Los logs permiten monitorear la salud de la API y depurar problemas en producción.
+- Todos los tests (10) siguen pasando sin cambios adicionales.
+- La aplicación está lista para ser desplegada con trazabilidad.
+
+## Nota
+El nivel de log se puede cambiar entre `INFO` y `DEBUG` mediante la variable de entorno `LOG_LEVEL` (pendiente de implementar). Por ahora está fijo en `INFO` en `main.py`.
+
+---
+
+[Fecha] 09/04/2026
+
+## Problema
+La API no contaba con un endpoint de monitoreo que permitiera verificar su estado y el de la base de datos, tanto en desarrollo como en producción.
+
+## Causa
+- No existía un endpoint dedicado a health check.
+- No se validaba la conectividad con la base de datos desde la API.
+
+## Solución
+- Se creó el endpoint `GET /health` en `app/routes/health.py`.
+- El endpoint ejecuta una consulta simple `SELECT 1` a la base de datos.
+- Retorna `200 OK` con `{"status":"ok","database":"connected"}` si la base responde.
+- Si hay error, retorna `503 Service Unavailable` con `{"status":"degraded","database":"disconnected"}`.
+- Se registró el router en `app/main.py`.
+- Se agregaron logs de error en caso de falla.
+
+## Resultado
+- Ahora se puede monitorear la salud de la API y la base de datos mediante `GET /health`.
+- Útil para orquestadores (Docker, Kubernetes) y servicios de monitoreo.
+- Todos los tests siguen pasando.
+
+---
+
+[Fecha] 09/04/2026
+
+## Problema
+El despliegue en Railway fallaba porque la variable `DATABASE_URL` usaba el driver síncrono `postgresql://`, incompatible con el uso de `asyncpg` en SQLAlchemy asíncrono.
+
+## Causa
+Railway inyecta por defecto una URL con `postgresql://` (sin `+asyncpg`). La aplicación esperaba un driver asíncrono para `create_async_engine`.
+
+## Solución
+- Se modificó manualmente la variable `DATABASE_URL` en el servicio de API de Railway, cambiando `postgresql://` por `postgresql+asyncpg://`.
+- Alternativamente, se agregó un validador en `app/core/config.py` que convierte automáticamente la URL al formato asíncrono si es necesario.
+- Se redeployó la aplicación.
+
+## Resultado
+- La aplicación arranca correctamente en Railway.
+- Las tablas se crean automáticamente mediante `Base.metadata.create_all`.
+- El endpoint `/health` responde `200 OK`.
+- La documentación Swagger está disponible en `/docs`.
+
+---
+
+[Fecha] 10/04/2026
+
+## Problema
+Los endpoints `/login`, `/refresh` y `/logout` usaban mecanismos confusos para el usuario:
+- `/login` utilizaba `OAuth2PasswordRequestForm`, que mostraba campos irrelevantes en Swagger (`grant_type`, `scope`, `client_id`, `client_secret`).
+- `/refresh` y `/logout` esperaban el token en el header `Authorization`, lo que obligaba a usar el botón "Authorize" en Swagger y dificultaba las pruebas manuales.
+- Los tests enviaban los datos en formato `data=` (form) o en headers, no en JSON.
+
+## Causa
+- Se había adoptado el estándar OAuth2 password flow sin necesidad real.
+- No se diseñaron esquemas Pydantic explícitos para la entrada de estos endpoints.
+
+## Solución
+- Se crearon los esquemas `LoginRequest`, `RefreshRequest` y `LogoutRequest` en `app/schemas/user.py`.
+- Se modificaron los endpoints para recibir JSON en lugar de form data o headers.
+- Se eliminaron las dependencias `OAuth2PasswordRequestForm`, `OAuth2PasswordBearer` y `oauth2_scheme` (ya no se usan).
+- Se mejoraron los logs en `/logout` (se agrega verificación opcional del token y advertencias).
+- Se actualizaron todos los tests en `tests/integration/test_users.py` para usar `json=` en lugar de `data=` o headers.
+- Se corrigió `test_refresh_token` para que use el usuario correcto.
+
+## Resultado
+- Swagger ahora muestra campos limpios y editables para cada endpoint.
+- La API es más intuitiva para desarrolladores externos.
+- Los tests pasan correctamente (10/10).
+- El código es más mantenible al eliminar dependencias innecesarias.
+
+## Nota
+Se mantiene la lógica de negocio original (generación de tokens, almacenamiento de hashes, revocación, multi‑sesión). Solo cambió la interfaz de entrada.
+
+---
+
+[Fecha] 11/04/2026
+
+## Problema
+Se requiere evolucionar la API hacia un sistema de pagos headless (Plug & Play Payment Links). Para ello es necesario añadir Redis, Celery, modelos de pago, endpoints básicos y asegurar que el despliegue en Railway funcione correctamente.
+
+## Causa
+- La aplicación no tenía soporte para tareas asíncronas (emails, webhooks).
+- Faltaban las tablas `payment_links`, `payments`, `events`.
+- El despliegue en Railway fallaba por falta de los esquemas `LoginRequest`, `RefreshRequest`, `LogoutRequest` (añadidos en el paso anterior pero no subidos correctamente).
+- El modelo `PaymentLink` usaba el nombre `metadata`, que está reservado por SQLAlchemy.
+
+## Solución
+
+### 1. Configuración de Redis y Celery
+- Se agregaron las dependencias `redis`, `celery`, `stripe` a `pyproject.toml`.
+- Se configuró Redis en `docker-compose.yml` (puerto 6379).
+- Se creó `app/workers/celery_app.py` y `app/workers/tasks.py` con una tarea de ejemplo.
+- Se añadió `redis_url` a `Settings` en `config.py` (sin valor por defecto, obligatorio desde `.env`).
+- Se probó el worker localmente con `celery -A app.workers.celery_app worker`.
+
+### 2. Modelos de pago y eventos
+- Se crearon `app/models/payment_link.py`, `payment.py`, `event.py` usando SQLAlchemy 2.0 (`Mapped`, `mapped_column`).
+- Se reemplazó `metadata` por `extra_data` para evitar conflicto con palabra reservada.
+- Se generó y aplicó la migración Alembic (`add_payment_tables_fixed`).
+
+### 3. Esquemas Pydantic y endpoints
+- Se creó `app/schemas/payment_link.py` con `PaymentLinkCreate` y `PaymentLinkResponse`.
+- Se creó `app/routes/payment_links.py` con el endpoint `POST /payment-links` (protegido con JWT).
+- Se registró el router en `app/main.py`.
+- Se corrigió el uso de `data.metadata` por `data.extra_data` en el endpoint.
+
+### 4. Corrección del despliegue en Railway
+- Se verificó que los esquemas `LoginRequest`, `RefreshRequest`, `LogoutRequest` estuvieran en `app/schemas/user.py` (faltaban en el repositorio remoto).
+- Se hizo push de los cambios y Railway redeployó correctamente.
+- Se actualizó la variable `REDIS_URL` en Railway para conectar con el servicio Redis añadido.
+
+### 5. Prueba de creación de payment link
+- Se autenticó un usuario (`cafe@gato.com`) y se obtuvo `access_token`.
+- Se llamó a `POST /payment-links` con el token y se recibió respuesta exitosa:
+  ```json
+  {"id":1,"title":"Consultoría","amount":15000.0,"currency":"CLP","type":"fixed","status":"active","public_id":"091f598d","created_at":"2026-04-11T14:52:12.428287Z","extra_data":{}}
+
+## Resultado
+
+- Redis y Celery operativos en desarrollo local (y listos para producción).
+
+- Modelos de pago creados y migrados.
+
+- Endpoint de creación de payment links funcionando con autenticación JWT.
+
+- Despliegue en Railway restablecido y funcionando.
+
+- El sistema está preparado para la siguiente fase: integración con pasarelas de pago (Stripe) y webhooks.
+
+## Nota
+
+- El worker de Celery aún no se despliega en Railway; se añadirá como un servicio separado en el futuro.
+
+- Los endpoints de listado, detalle y página pública (/pay/{public_id}) se implementarán en la próxima iteración.
+
+---
+
+[Fecha] 11/04/2026 (2)
+
+## Problema
+Se necesita integrar una pasarela de pagos real (Stripe) para que los payment links creados permitan a los compradores pagar con tarjeta. Además, se requiere manejar webhooks para actualizar el estado de los pagos y emitir eventos internos.
+
+## Causa
+- No existía integración con Stripe.
+- Los endpoints de payment links solo almacenaban datos, no generaban sesiones de pago.
+- No se gestionaban eventos de éxito/fracaso de pagos.
+
+## Solución
+
+### 1. Integración de Stripe
+- Se añadieron las variables de entorno `STRIPE_SECRET_KEY` y `STRIPE_PUBLISHABLE_KEY` (en `.env` y en Railway).
+- Se instaló la librería `stripe` (ya estaba).
+- Se creó el endpoint público `GET /pay/{public_id}` que:
+  - Busca el `PaymentLink` por `public_id`.
+  - Crea una sesión de Stripe Checkout con el monto, título y moneda.
+  - Redirige al usuario a `session.url` (devuelve la URL en JSON).
+- Se registró el router en `app/main.py`.
+
+### 2. Webhook de Stripe
+- Se creó el endpoint `POST /webhooks/stripe` que:
+  - Verifica la firma del webhook usando la clave `STRIPE_WEBHOOK_SECRET`.
+  - Escucha el evento `checkout.session.completed`.
+  - Actualiza la tabla `payments` (crea un registro si no existe, o lo marca como `succeeded`).
+  - Emite un evento interno (se guarda en la tabla `events` con tipo `payment.succeeded`).
+
+### 3. Modelo `Payment` y tabla `payments`
+- Se creó el modelo `Payment` en `app/models/payment.py` con los campos: `id`, `payment_link_id`, `provider`, `provider_payment_id`, `amount`, `currency`, `status`, `metadata`, `created_at`, `updated_at`.
+- Se generó la migración correspondiente y se aplicó.
+
+### 4. Endpoints adicionales de payment links
+- Se añadió `GET /payment-links` para listar los links del usuario autenticado.
+- Se mejoró la respuesta de creación incluyendo el `public_id` generado.
+
+### 5. Despliegue en Railway
+- Se agregó el servicio Redis a Railway (necesario para Celery en el futuro).
+- Se configuraron las variables de entorno `REDIS_URL`, `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET`.
+- Se redeployó la aplicación; todos los endpoints funcionan correctamente en producción.
+
+## Resultado
+- El sistema ya permite crear payment links y procesar pagos reales con Stripe (modo test).
+- Los pagos exitosos actualizan el estado en la base de datos y generan eventos.
+- La API está desplegada en Railway y accesible públicamente.
+- El flujo completo es: crear link → compartir URL pública → cliente paga → webhook actualiza estado.
+
+## Próximos pasos
+- Implementar workers de Celery para procesar eventos (enviar emails, notificaciones).
+- Añadir soporte para MercadoPago.
+- Construir un SDK oficial (Python, JavaScript).
+
+---
+[Fecha] 11/04/2026 (3)
+
+## Problema
+Se requiere integrar Stripe como pasarela de pago para los payment links, permitiendo a los compradores pagar con tarjeta y actualizar el estado del pago mediante webhooks.
+
+## Causa
+- No existía integración con Stripe.
+- Los endpoints de payment links solo almacenaban datos, no generaban sesiones de pago.
+- No se gestionaban eventos de éxito/fracaso de pagos.
+
+## Solución
+
+### 1. Dependencias y configuración
+- Se añadió `stripe` al proyecto (`poetry add stripe`).
+- Se configuraron las variables de entorno: `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET`.
+- Se instaló y configuró Stripe CLI para desarrollo local (`stripe listen --forward-to localhost:8000/webhooks/stripe`).
+
+### 2. Endpoint público de pago
+- Se creó `GET /pay/{public_id}` en `app/routes/payment_links.py`.
+- Busca el `PaymentLink` por `public_id` y crea una sesión de Stripe Checkout.
+- Devuelve la URL de Stripe para que el comprador realice el pago.
+
+### 3. Webhook de Stripe
+- Se creó el endpoint `POST /webhooks/stripe` en `app/routes/webhooks.py`.
+- Verifica la firma del webhook con `stripe.Webhook.construct_event`.
+- Escucha eventos `checkout.session.completed` y `checkout.session.expired`.
+- Actualiza la tabla `payments` (crea o actualiza registro) y emite eventos internos en la tabla `events`.
+
+### 4. Prueba local exitosa
+- Se creó un usuario, se generó un payment link, se obtuvo la URL de Stripe Checkout.
+- Se pagó con tarjeta de prueba `4242 4242 4242 4242`.
+- El webhook local (Stripe CLI) recibió el evento y la API actualizó el estado del pago en la base de datos.
+
+## Resultado
+- El sistema ya permite procesar pagos reales con Stripe en modo test.
+- El flujo completo es: crear link → compartir URL → cliente paga → webhook actualiza estado.
+- La API está lista para desplegar en Railway con el webhook de producción configurado en Stripe Dashboard.
+
+## Nota
+- Para producción, se debe crear un webhook aparte en Stripe Dashboard con la URL pública de Railway y usar su propio secreto (`STRIPE_WEBHOOK_SECRET`).
+- La CLI de Stripe se usa solo para desarrollo local.
+
+---
+
+[Fecha] 13/04/2026
+
+## Problema
+Se necesita exponer los pagos realizados por los usuarios a través de la API, para que puedan consultar su historial y el detalle de cada transacción.
+
+## Causa
+- No existían endpoints para listar pagos ni para ver el detalle de un pago específico.
+- Los endpoints de listado de payment links no tenían paginación.
+
+## Solución
+- Se creó el esquema `PaymentResponse` en `app/schemas/payment.py`.
+- Se implementó el endpoint `GET /payment-links/payments` que lista todos los pagos del usuario autenticado (con paginación `skip`/`limit` y orden descendente por fecha).
+- Se implementó el endpoint `GET /payment-links/payments/{payment_id}` que devuelve el detalle de un pago específico (verificando que pertenezca al usuario).
+- Se añadió paginación a `GET /payment-links` (parámetros `skip` y `limit`).
+- Se corrigió la importación de `Optional` (debe venir de `typing`, no de `pydantic`).
+
+## Resultado
+- Los usuarios pueden consultar su historial de pagos y el detalle de cada transacción.
+- Los endpoints de listado ahora soportan paginación, mejorando el rendimiento y la usabilidad.
+- La API está más completa para integrarse con frontends o servicios externos.
+
+## Nota
+- Los nuevos endpoints requieren autenticación (access token).
+- La paginación usa `skip` (registros a saltar) y `limit` (máximo de registros por página).
+
+---
