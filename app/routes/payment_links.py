@@ -136,22 +136,3 @@ async def get_payment_detail(
         raise HTTPException(status_code=404, detail="Payment not found")
     return payment
 
-@router.get("/payments/{payment_id}", response_model=PaymentResponse)
-async def get_payment_detail(
-    payment_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Obtiene el detalle de un pago específico (solo si pertenece al usuario)."""
-    result = await db.execute(
-        select(Payment)
-        .join(PaymentLink, Payment.payment_link_id == PaymentLink.id)
-        .where(
-            Payment.id == payment_id,
-            PaymentLink.user_id == current_user.id
-        )
-    )
-    payment = result.scalar_one_or_none()
-    if not payment:
-        raise HTTPException(status_code=404, detail="Payment not found")
-    return payment
