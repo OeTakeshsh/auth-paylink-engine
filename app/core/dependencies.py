@@ -1,5 +1,5 @@
 from fastapi import Depends, HTTPException
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -7,12 +7,26 @@ from app.core.database import get_db
 from app.core.auth import decode_access_token
 from app.models.user import User
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/users/login")
+# Change: Use HTTPBearer instead of OAuth2PasswordBearer
+# This tells Swagger to show a simple "paste token" field
+security = HTTPBearer(auto_error=False)
 
 async def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
     db: AsyncSession = Depends(get_db),
 ):
+    # If no credentials provided (no token)
+    if not credentials:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Extract the token string from the Authorization header
+    token = credentials.credentials
+    
+    # Your existing validation logic (unchanged)
     payload = decode_access_token(token)
     
     if payload is None:

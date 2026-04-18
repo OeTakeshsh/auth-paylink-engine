@@ -443,3 +443,46 @@ Se necesita exponer los pagos realizados por los usuarios a través de la API, p
 - La paginación usa `skip` (registros a saltar) y `limit` (máximo de registros por página).
 
 ---
+
+[Fecha] 18/04/2026
+
+## Problema
+El botón "Authorize" de Swagger UI (documentación interactiva en `/docs`) fallaba con error `422 Unprocessable Content` al intentar autenticar. El formulario de autorización mostraba campos de usuario/contraseña (OAuth2 password flow) y al enviarlos, Swagger realizaba una petición `POST /users/login` con `Content-Type: application/x-www-form-urlencoded`, pero el endpoint espera JSON, causando el error.
+
+## Causa
+- La dependencia `OAuth2PasswordBearer(tokenUrl="/users/login")` en `app/core/dependencies.py` indicaba a FastAPI que el esquema de seguridad era OAuth2 con password flow.
+- FastAPI generaba el OpenAPI con `securitySchemes` de tipo `oauth2`, lo que obligaba a Swagger UI a mostrar un formulario de usuario/contraseña y a enviar los datos en formato form-urlencoded.
+- El endpoint real `/users/login` solo acepta JSON, no form data, produciendo el error 422.
+
+## Solución
+
+### 1. Cambiar la dependencia de autenticación
+- Se reemplazó `OAuth2PasswordBearer` por `HTTPBearer` en `app/core/dependencies.py`.
+- Se modificó `get_current_user` para recibir `HTTPAuthorizationCredentials` y extraer el token manualmente.
+- Se añadió manejo del caso `credentials is None` para retornar 401 con el header `WWW-Authenticate: Bearer`.
+
+### 2. Personalizar el esquema OpenAPI
+- En `app/main.py` se añadió la función `custom_openapi()` que:
+  - Obtiene el esquema por defecto con `get_openapi()`.
+  - Reemplaza `securitySchemes` con `BearerAuth` de tipo `http`, esquema `bearer` y formato `JWT`.
+  - Agrega una descripción detallada explicando cómo obtener el token desde `POST /users/login`.
+  - Asigna `security: [{"BearerAuth": []}]` a nivel global.
+- Se sobrescribió `app.openapi = custom_openapi` para que Swagger UI use esta configuración.
+
+### 3. Flujo de trabajo para desarrolladores
+- El desarrollador obtiene un token mediante `curl` o la propia interfaz de Swagger ejecutando `POST /users/login` con JSON.
+- Copia el `access_token` y lo pega en el campo "Value" del nuevo formulario de autorización.
+- Swagger UI guarda el token y lo envía en el header `Authorization: Bearer <token>` en todas las peticiones autenticadas.
+
+## Resultado
+- Swagger UI ya no muestra el formulario OAuth2 con usuario/contraseña, sino un campo de texto simple para pegar el token.
+- Desaparece el error 422 porque Swagger ya no intenta llamar a `/users/login`.
+- Los endpoints protegidos (creación/listado de payment links, consulta de pagos, etc.) se pueden probar sin problemas en la documentación interactiva.
+- La API mantiene su endpoint `/users/login` con JSON para el frontend real, sin cambios.
+
+## Nota
+- Este cambio no afecta al funcionamiento de la API para clientes reales; solo modifica la documentación interactiva.
+- La autenticación sigue basándose en JWT, y la validación de tokens no ha variado.
+- La solución es compatible con cualquier cliente que envíe el header `Authorization: Bearer <token>`.
+
+---
