@@ -486,3 +486,41 @@ El botón "Authorize" de Swagger UI (documentación interactiva en `/docs`) fall
 - La solución es compatible con cualquier cliente que envíe el header `Authorization: Bearer <token>`.
 
 ---
+[Fecha] 19/04/2026
+
+## Problema
+Aunque se había configurado `HTTPBearer` para la autenticación, Swagger UI seguía sin enviar el header `Authorization` en las peticiones a los endpoints protegidos (ej. `POST /payment-links/`). El botón "Authorize" aceptaba cualquier texto (incluso inválido) y mostraba "Authorized", pero al ejecutar un endpoint el servidor respondía `401 Unauthorized`. Además, el endpoint público `/payment-links/pay/{public_id}` aparecía con el candado de autenticación, causando confusión.
+
+## Causa
+- El esquema de seguridad en el OpenAPI generado por FastAPI se llamaba `BearerAuth`, pero las operaciones (paths) requerían un esquema llamado `HTTPBearer`. Swagger UI no podía asociar el token ingresado con el requisito de seguridad.
+- Aunque se definió `custom_openapi()`, no se asignó explícitamente la seguridad a cada operación, y el nombre del esquema no coincidía.
+- El endpoint público heredaba la dependencia global del router (`dependencies=[Depends(get_current_user)]`), por lo que el OpenAPI lo marcaba como protegido.
+
+## Solución
+
+### 1. Corregir el nombre del esquema de seguridad
+En `app/main.py`, dentro de `custom_openapi()`, se cambió la clave del diccionario `securitySchemes` de `"BearerAuth"` a `"HTTPBearer"` (el nombre que FastAPI espera por defecto al usar `HTTPBearer` en las dependencias).
+
+### 2. Asignar seguridad a cada operación explícitamente
+Se recorrieron todos los `paths` del OpenAPI y se asignó `operation["security"] = [{"HTTPBearer": []}]` a todas las operaciones excepto aquellas con path público (como `/payment-links/pay/`). Para el path público se asignó `operation["security"] = []`.
+
+### 3. Configurar dependencia global en el router de payment links
+En `app/routes/payment_links.py` se agregó `dependencies=[Depends(get_current_user)]` al definir el `APIRouter`, asegurando que todas las rutas del router requieran autenticación por defecto. Luego, se anuló explícitamente en el endpoint público usando `@router.get("/pay/{public_id}", dependencies=[])`.
+
+### 4. Mejorar la descripción en Swagger
+Se actualizó la descripción del esquema `HTTPBearer` para advertir que Swagger no valida el token y que el usuario debe pegar un token real obtenido de `POST /users/login`.
+
+## Resultado
+- Swagger UI ahora envía correctamente el header `Authorization: Bearer <token>` en todas las peticiones a endpoints protegidos.
+- El endpoint público ya no muestra el candado de autenticación y funciona sin token.
+- El botón "Authorize" sigue aceptando cualquier texto (comportamiento normal de Swagger), pero el backend valida el token y rechaza los inválidos con `401`.
+- Los desarrolladores pueden probar los endpoints de pago sin errores de formato (422) y con validación real de token.
+
+## Nota
+- La validación del token sigue siendo responsabilidad exclusiva del backend. Swagger solo actúa como un gestor de headers.
+- Se recomienda a los desarrolladores obtener un token fresco desde `POST /users/login` y pegarlo en Authorize antes de probar endpoints protegidos.
+- Este cambio no afecta a clientes externos que ya usen el header `Authorization` correctamente.
+
+---
+
+

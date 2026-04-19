@@ -13,12 +13,16 @@ from app.core.logging import app_logger
 from uuid import uuid4
 from app.core.config import settings
 
-router = APIRouter(prefix="/payment-links", tags=["payment-links"])
+router = APIRouter(
+    prefix="/payment-links",
+    tags=["payment-links"],
+    dependencies=[Depends(get_current_user)]   # Global dependency: all routes require auth
+)
 
 @router.post("/", response_model=PaymentLinkResponse)
 async def create_payment_link(
     data: PaymentLinkCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),  # optional, already provided by router
     db: AsyncSession = Depends(get_db)
 ):
     app_logger.info(f"create payment link for user {current_user.id}")
@@ -39,29 +43,29 @@ async def create_payment_link(
 
 @router.get("/", response_model=list[PaymentLinkResponse])
 async def list_payment_links(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),  # optional
     db: AsyncSession = Depends(get_db),
-    skip: int = 0,          # ← nuevo parámetro
-    limit: int = 20         # ← nuevo parámetro
+    skip: int = 0,
+    limit: int = 20
 ):
-    """Lista todos los payment links del usuario autenticado (con paginación)."""
+    """List all payment links for the authenticated user (with pagination)."""
     result = await db.execute(
         select(PaymentLink)
         .where(PaymentLink.user_id == current_user.id)
         .order_by(PaymentLink.created_at.desc())
-        .offset(skip)       # ← añadido
-        .limit(limit)       # ← añadido
+        .offset(skip)
+        .limit(limit)
     )
     links = result.scalars().all()
     return links
 
-@router.get("/pay/{public_id}")
+# Public endpoint – overrides the global dependency
+@router.get("/pay/{public_id}", dependencies=[])
 async def get_payment_link_public(
     public_id: str,
     db: AsyncSession = Depends(get_db)
 ):
-    """Endpoint público para crear una sesión de Stripe Checkout y redirigir al pago."""
-    # Buscar el payment link por public_id
+    """Public endpoint to create a Stripe Checkout session and redirect to payment."""
     result = await db.execute(
         select(PaymentLink).where(PaymentLink.public_id == public_id, PaymentLink.status == "active")
     )
@@ -69,10 +73,8 @@ async def get_payment_link_public(
     if not link:
         raise HTTPException(status_code=404, detail="Payment link not found")
 
-    # Configurar Stripe con la clave secreta
     stripe.api_key = settings.stripe_secret_key
 
-    # Crear sesión de Checkout
     try:
         session = stripe.checkout.Session.create(
             payment_method_types=["card"],
@@ -80,12 +82,12 @@ async def get_payment_link_public(
                 "price_data": {
                     "currency": link.currency.lower(),
                     "product_data": {"name": link.title},
-                    "unit_amount": int(link.amount * 100),  # Stripe usa centavos
+                    "unit_amount": int(link.amount * 100),
                 },
                 "quantity": 1,
             }],
             mode="payment",
-            success_url="https://tu-sitio.com/success",   # Cambia por tu URL real
+            success_url="https://tu-sitio.com/success",
             cancel_url="https://tu-sitio.com/cancel",
             metadata={
                 "payment_link_id": str(link.id),
@@ -99,19 +101,19 @@ async def get_payment_link_public(
 
 @router.get("/payments", response_model=list[PaymentResponse])
 async def list_user_payments(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),  # optional
     db: AsyncSession = Depends(get_db),
-    skip: int = 0,          # ← nuevo parámetro
-    limit: int = 20         # ← nuevo parámetro
+    skip: int = 0,
+    limit: int = 20
 ):
-    """Lista todos los pagos realizados por el usuario autenticado (con paginación)."""
+    """List all payments made by the authenticated user (with pagination)."""
     result = await db.execute(
         select(Payment)
         .join(PaymentLink, Payment.payment_link_id == PaymentLink.id)
         .where(PaymentLink.user_id == current_user.id)
         .order_by(Payment.created_at.desc())
-        .offset(skip)       # ← añadido
-        .limit(limit)       # ← añadido
+        .offset(skip)
+        .limit(limit)
     )
     payments = result.scalars().all()
     return payments
@@ -119,10 +121,10 @@ async def list_user_payments(
 @router.get("/payments/{payment_id}", response_model=PaymentResponse)
 async def get_payment_detail(
     payment_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),  # optional
     db: AsyncSession = Depends(get_db)
 ):
-    """Obtiene el detalle de un pago específico (solo si pertenece al usuario)."""
+    """Get details of a specific payment (only if it belongs to the user)."""
     result = await db.execute(
         select(Payment)
         .join(PaymentLink, Payment.payment_link_id == PaymentLink.id)
@@ -135,4 +137,3 @@ async def get_payment_detail(
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
     return payment
-

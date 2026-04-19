@@ -43,42 +43,44 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
-    # Don't add security here - we'll do it in custom_openapi
 )
 
 # Custom OpenAPI configuration to add Bearer auth for Swagger
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
-    
+
     openapi_schema = get_openapi(
         title="Project Management API",
         version="1.0.0",
         description="API for managing payment links and payments",
         routes=app.routes,
     )
-    
-    # Add security scheme for Bearer token (manual paste)
-    openapi_schema["components"] = openapi_schema.get("components", {})
+
+    # Use the exact name that FastAPI expects: "HTTPBearer"
     openapi_schema["components"]["securitySchemes"] = {
-        "BearerAuth": {
+        "HTTPBearer": {
             "type": "http",
             "scheme": "bearer",
             "bearerFormat": "JWT",
             "description": (
-                "Paste your access token here.\n\n"
-                "How to get your token:\n"
-                "1. Use the POST /users/login endpoint with JSON body:\n"
-                '   {"username": "your_email@example.com", "password": "your_password"}\n'
-                "2. Copy the 'access_token' value from the response\n"
-                "3. Paste it below and click Authorize"
+                "⚠️ **IMPORTANT**: Swagger does NOT validate the token.\n\n"
+                "1. Call `POST /users/login` with JSON:\n"
+                '   `{"username": "email@example.com", "password": "your_password"}`\n'
+                "2. Copy the `access_token` from the response.\n"
+                "3. Paste it here and click Authorize.\n\n"
+                "If the token is invalid or expired, endpoints will return 401."
             )
         }
     }
-    
-    # Apply security globally to all endpoints
-    openapi_schema["security"] = [{"BearerAuth": []}]
-    
+
+    # Mark the public endpoint as having no security
+    public_path = "/payment-links/pay/"
+    for path, path_item in openapi_schema["paths"].items():
+        if path.startswith(public_path):
+            for method, operation in path_item.items():
+                operation["security"] = []   # remove security requirement
+
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
