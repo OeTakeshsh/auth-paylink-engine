@@ -13,11 +13,20 @@ from app.core.logging import app_logger
 from uuid import uuid4
 from app.core.config import settings
 
+
+#routers
 router = APIRouter(
     prefix="/payment-links",
     tags=["payment-links"],
     dependencies=[Depends(get_current_user)]   # Global dependency: all routes require auth
 )
+
+public_router = APIRouter(
+        prefix="/payment-links",
+        tags=["payment-links"]
+)
+
+
 
 @router.post("/", response_model=PaymentLinkResponse)
 async def create_payment_link(
@@ -60,7 +69,7 @@ async def list_payment_links(
     return links
 
 # Public endpoint – overrides the global dependency
-@router.get("/pay/{public_id}", dependencies=[])
+@public_router.get("/pay/{public_id}", dependencies=[])
 async def get_payment_link_public(
     public_id: str,
     db: AsyncSession = Depends(get_db)
@@ -139,12 +148,12 @@ async def get_payment_detail(
     return payment
 
 # Endpoints de redirección para Stripe (públicos, no requieren autenticación)
-@router.get("/payment-success", dependencies=[])
+@public_router.get("/payment-success", dependencies=[])
 async def payment_success(session_id: str = None):
     """Stripe redirige aquí tras un pago exitoso."""
     return {"message": "Payment successful", "session_id": session_id}
 
-@router.get("/payment-cancel", dependencies=[])
+@public_router.get("/payment-cancel", dependencies=[])
 async def payment_cancel():
     """Stripe redirige aquí si el usuario cancela el pago."""
     return {"message": "Payment cancelled"}

@@ -522,5 +522,59 @@ Se actualizó la descripción del esquema `HTTPBearer` para advertir que Swagger
 - Este cambio no afecta a clientes externos que ya usen el header `Authorization` correctamente.
 
 ---
+Fecha] 20/04/2026
+
+## Problema
+La integración con Stripe presentaba errores en el webhook al recibir el evento `checkout.session.completed`. El endpoint público `/payment-links/pay/{public_id}` aún exigía autenticación a pesar de haber sido declarado como público, y no existían endpoints de redirección para éxito/cancelación. Además, el webhook fallaba con `500 Internal Server Error` debido a problemas de serialización JSON y al uso incorrecto del objeto `StripeObject`.
+
+## Causa
+- El router de `payment-links` tenía una dependencia global `dependencies=[Depends(get_current_user)]` que se aplicaba a todas las rutas, incluyendo `/pay/{public_id}`, a pesar de intentar anularla con `dependencies=[]`.
+- Dentro del webhook, se intentaba acceder a `session.metadata` como si fuera un diccionario, pero `session` era un `StripeObject` sin método `.get()`, causando `AttributeError`.
+- Se intentaba serializar el objeto `event` completo con `json.dumps(event)`, pero `event` no es JSON serializable (objeto `stripe.Event`).
+- Faltaban endpoints de redirección (`/payment-success`, `/payment-cancel`) para que Stripe pudiera redirigir al usuario después del pago.
+- Las URLs de éxito/cancelación en la creación de la sesión de Stripe apuntaban a `https://tu-sitio.com/success`, que no existen.
+
+## Solución
+
+### 1. Separar routers públicos y protegidos
+- Se creó un segundo router `public_router` en `app/routes/payment_links.py` sin dependencia de autenticación.
+- Se movieron los endpoints públicos (`/pay/{public_id}`, `/payment-success`, `/payment-cancel`) a `public_router`.
+- Se mantuvo el router original `router` con `dependencies=[Depends(get_current_user)]` para los endpoints protegidos.
+- En `app/main.py`, se registraron ambos routers (`payment_links_router` y `public_router`).
+- Se actualizó `app/routes/__init__.py` para exportar `public_router`.
+
+### 2. Crear endpoints de redirección
+- Se agregaron dos nuevos endpoints públicos en `public_router`:
+  - `GET /payment-success?session_id=...` → retorna `{"message": "Payment successful", "session_id": session_id}`
+  - `GET /payment-cancel` → retorna `{"message": "Payment cancelled"}`
+- Se actualizó la creación de la sesión de Stripe en `/pay/{public_id}` para que `success_url` y `cancel_url` apunten a `http://localhost:8000/payment-links/payment-success?session_id={CHECKOUT_SESSION_ID}` y `http://localhost:8000/payment-links/payment-cancel` respectivamente.
+
+### 3. Corregir el webhook de Stripe
+- En `app/routes/webhooks.py`, se convirtió el objeto `session` a diccionario usando `session.to_dict()` o `dict(session)` para poder usar `.get()` y evitar errores de serialización.
+- Se reemplazó `session.metadata or {}` por `metadata = session_dict.get("metadata", {})`.
+- Se eliminó la línea `app_logger.info(f"full event: {json.dumps(event, indent=2)}")` que causaba el error `TypeError: Object of type Event is not JSON serializable`. Alternativamente, se puede loguear `event.to_dict()` si se desea.
+- Se ajustó la creación del objeto `Payment` usando `session_dict` en lugar del objeto original.
+
+### 4. Probar el flujo completo localmente
+- Se ejecutó Stripe CLI: `stripe listen --forward-to localhost:8000/webhooks/stripe`
+- Se creó un payment link autenticado.
+- Se accedió a `GET /payment-links/pay/{public_id}` (sin token), obteniendo `checkout_url`.
+- Se pagó con tarjeta de prueba `4242 4242 4242 4242`.
+- El webhook recibió el evento `checkout.session.completed` y respondió `200 OK`, guardando el pago en la tabla `payments`.
+- El navegador fue redirigido a `/payment-success` mostrando el mensaje de éxito.
+
+## Resultado
+- El endpoint público ya no requiere autenticación (cualquier cliente puede pagar).
+- El webhook procesa correctamente los eventos de Stripe y persiste los pagos en la base de datos.
+- Los endpoints de redirección permiten al usuario saber el resultado del pago.
+- El flujo completo de pago funciona sin errores en entorno local.
+- Los endpoints protegidos (listado de payment links, pagos, etc.) siguen requiriendo token JWT.
+
+## Nota
+- Para producción, se deben reemplazar las URLs `http://localhost:8000` por la URL pública de Railway (ej. `https://mi-api.up.railway.app`).
+- El secreto del webhook (`STRIPE_WEBHOOK_SECRET`) debe ser el generado por Stripe CLI para desarrollo, y en producción el del webhook creado en Stripe Dashboard.
+- La tarjeta de prueba `4242 4242 4242 4242` simula un pago exitoso sin dinero real.
+
+---
 
 

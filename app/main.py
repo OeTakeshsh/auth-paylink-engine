@@ -13,6 +13,7 @@ from app.routes import (
     user_router,
     health_router,
     payment_links_router,
+    public_router,
     webhook_router
 )
 
@@ -93,6 +94,7 @@ app.include_router(health_router)
 app.include_router(user_router)
 app.include_router(payment_links_router)
 app.include_router(webhook_router)
+app.include_router(public_router)
 
 @app.get("/")
 def root():
