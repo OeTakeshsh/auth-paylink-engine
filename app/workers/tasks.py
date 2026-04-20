@@ -7,13 +7,14 @@ from app.models.payment import Payment
 from app.models.payment_link import PaymentLink
 from app.core.logging import app_logger
 import stripe
-@celery_app.task
 
+
+@celery_app.task
 def send_test_email(email:str):
     print(f"Sending email to {email}")
     return f"Email sent to {email}"
 
- Motor síncrono para Celery (no usa asyncpg)
+# Motor síncrono para Celery (no usa asyncpg)
 SYNC_DATABASE_URL = settings.database_url.replace('+asyncpg', '')
 engine = create_engine(SYNC_DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
