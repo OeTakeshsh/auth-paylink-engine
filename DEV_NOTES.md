@@ -577,4 +577,48 @@ La integración con Stripe presentaba errores en el webhook al recibir el evento
 
 ---
 
+[Fecha] 20/04/2026
 
+## Problema
+El webhook de Stripe procesaba los pagos de forma síncrona, lo que podía causar timeouts (Stripe espera una respuesta en menos de 10 segundos) y bloqueaba el rendimiento de la API. Además, no se aprovechaba la infraestructura asíncrona.
+
+## Causa
+- El endpoint `/webhooks/stripe` realizaba consultas a la base de datos y creación de registros dentro del mismo ciclo de petición.
+- No se había integrado Celery para delegar tareas pesadas a workers en segundo plano.
+
+## Solución
+
+### 1. Configuración de Celery y Redis
+- Se añadió Redis como broker y backend (en `docker-compose.yml` y en Railway).
+- Se creó `app/workers/celery_app.py` con la instancia de Celery.
+- Se definió la variable `redis_url` en `Settings`.
+
+### 2. Tarea asíncrona para procesar pagos
+- En `app/workers/tasks.py` se creó la tarea `process_stripe_payment` que:
+  - Usa un motor de base de datos síncrono (porque Celery no soporta async).
+  - Consulta Stripe para obtener la sesión de pago.
+  - Guarda el registro en la tabla `payments` con idempotencia.
+- También se mantuvo la tarea de ejemplo `send_test_email`.
+
+### 3. Webhook no bloqueante
+- Se modificó `app/routes/webhooks.py` para que:
+  - Solo valide la firma del webhook.
+  - Encole la tarea `process_stripe_payment.delay(session_id)`.
+  - Responda inmediatamente con `{"status": "queued"}`.
+
+### 4. Despliegue del worker
+- En local: se agregó un servicio `worker` en `docker-compose.yml` con el comando `celery -A app.workers.celery_app worker`.
+- En Railway: se añadió un nuevo servicio (desde el mismo repositorio) con el comando de inicio personalizado para Celery, más un servicio Redis.
+
+## Resultado
+- El webhook responde en milisegundos, Stripe recibe `200 OK` rápidamente.
+- El procesamiento del pago se ejecuta en segundo plano sin afectar la experiencia del usuario.
+- La API es más escalable y tolerante a picos de tráfico.
+- Se aprovecha la infraestructura de Railway con servicios separados (API, Redis, Worker).
+
+## Nota
+- Es crucial que el worker tenga las mismas variables de entorno que la API (sobre todo `DATABASE_URL`, `STRIPE_SECRET_KEY` y `REDIS_URL`).
+- Para desarrollo local, Redis se levanta con `docker-compose`.
+- En producción, Railway maneja la persistencia de Redis y PostgreSQL automáticamente.
+
+---
