@@ -87,8 +87,8 @@ async def get_payment_link_public(
                 "quantity": 1,
             }],
             mode="payment",
-            success_url="https://tu-sitio.com/success",
-            cancel_url="https://tu-sitio.com/cancel",
+            success_url = "http://localhost:8000/payment-links/payment-success?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url = "http://localhost:8000/payment-links/payment-cancel",
             metadata={
                 "payment_link_id": str(link.id),
                 "public_id": public_id,
@@ -137,3 +137,14 @@ async def get_payment_detail(
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
     return payment
+
+# Endpoints de redirección para Stripe (públicos, no requieren autenticación)
+@router.get("/payment-success", dependencies=[])
+async def payment_success(session_id: str = None):
+    """Stripe redirige aquí tras un pago exitoso."""
+    return {"message": "Payment successful", "session_id": session_id}
+
+@router.get("/payment-cancel", dependencies=[])
+async def payment_cancel():
+    """Stripe redirige aquí si el usuario cancela el pago."""
+    return {"message": "Payment cancelled"}
