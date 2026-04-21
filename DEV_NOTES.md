@@ -622,3 +622,83 @@ El webhook de Stripe procesaba los pagos de forma síncrona, lo que podía causa
 - En producción, Railway maneja la persistencia de Redis y PostgreSQL automáticamente.
 
 ---
+
+Fecha: 21/04/2026
+
+
+## Problema
+
+El worker de Celery no arrancaba en Railway, causando que los pagos no se procesaran asíncronamente.  
+Los logs mostraban reinicios constantes sin errores claros, y los intentos de depuración no revelaban la causa raíz.
+
+Como resultado:
+- Los pagos no se persistían en la base de datos
+- Los endpoints `/payment-links/payments` y `/payment-links/payments/{payment_id}` permanecían vacíos
+
+---
+
+## Causa
+
+- Comando de inicio mal configurado (referencia incorrecta a la app de Celery, uso de `--traceback` no soportado)
+- Railway mantuvo en caché un comando antiguo → requirió redeploy forzado
+- Concurrencia por defecto de Celery (48 procesos) excedía recursos → reinicios constantes
+- Uso incorrecto de `StripeObject` como dict (`.get()`), generando `AttributeError`
+
+---
+
+## Solución
+
+### 1. Corrección del comando de inicio
+
+```bash
+celery -A app.workers.celery_app:celery_app worker --loglevel=info
+```
+- Se eliminó `--traceback`
+- Se forzó un redeploy completo en Railway
+
+---
+
+### 2. Ajuste de concurrencia
+
+```bash
+celery -A app.workers.celery_app:celery_app worker --loglevel=info --concurrency=1
+```
+- Evita sobrecarga del contenedor
+- Elimina reinicios en bucle
+
+---
+
+### 3. Corrección de StripeObject
+
+```python
+session_dict = session.to_dict() if hasattr(session, "to_dict") else dict(session)
+metadata = session_dict.get("metadata", {})
+```
+- Se deja de usar session.metadata
+- Se evita AttributeError
+
+---
+
+## Resultado
+
+- Worker de Celery estable en Railway  
+- Webhook responde inmediatamente (`{"status": "queued"}`)  
+- Procesamiento asíncrono funcional  
+- Pagos persistidos correctamente en DB  
+- Endpoints funcionando correctamente  
+- Arquitectura (API + Redis + Worker) operativa en producción  
+
+---
+
+## Notas
+
+- Ajustar `--concurrency` según recursos disponibles  
+- Worker debe tener mismas variables de entorno que la API:
+  - `DATABASE_URL`
+  - `REDIS_URL`
+  - `STRIPE_SECRET_KEY`
+
+Para debug:
+
+```bash
+railway logs --service worker
