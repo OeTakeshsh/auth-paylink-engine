@@ -96,8 +96,8 @@ async def get_payment_link_public(
                 "quantity": 1,
             }],
             mode="payment",
-            success_url = "http://localhost:8000/payment-links/payment-success?session_id={CHECKOUT_SESSION_ID}",
-            cancel_url = "http://localhost:8000/payment-links/payment-cancel",
+            success_url = "https://auth-paylink-engine-production-d090.up.railway.app/payment-links/payment-success?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url = "https://auth-paylink-engine-production-d090.up.railway.app/payment-links/payment-cancel",
             metadata={
                 "payment_link_id": str(link.id),
                 "public_id": public_id,
