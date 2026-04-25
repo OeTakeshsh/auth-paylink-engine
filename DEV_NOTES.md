@@ -1,3 +1,8 @@
+## LEGACY (no estructurado)
+<todo lo antiguo, congelado>
+⚠️ No confiable como fuente de decisiones actuales
+
+
 [Fecha] 03/30/2026
 
 ## Problema
@@ -623,7 +628,7 @@ El webhook de Stripe procesaba los pagos de forma síncrona, lo que podía causa
 
 ---
 
-Fecha: 21/04/2026
+[Fecha] 21/04/2026
 
 
 ## Problema
@@ -698,7 +703,59 @@ metadata = session_dict.get("metadata", {})
   - `REDIS_URL`
   - `STRIPE_SECRET_KEY`
 
-Para debug:
+---
 
-```bash
-railway logs --service worker
+## ADR (v1 - decisiones estructuradas)
+
+### Formato:
+
+[Fecha] DD/MM/YYYY
+
+Contexto:
+<problema específico + condiciones + por qué es difícil>
+
+Decisión:
+<acción concreta en 1 línea, sin ambigüedad>
+
+Alternativas:
+- <opción real> → <por qué NO sirve en este contexto>
+
+Razón:
+<comparación explícita vs alternativas>
+
+Consecuencias:
++ <beneficio observable>
+- <costo o trade-off real>
+
+Trigger:
+<métrica o condición específica para reevaluar>
+
+---
+## Registros:
+
+[2026-04-23] idempotency-db-unique
+
+Contexto:
+requests concurrentes + retries duplican pagos; se requiere consistencia fuerte sin infra extra
+
+Decisión:
+UNIQUE constraint + idempotency key en DB (INSERT como arbitraje) + manejo explicito de estados (processing, succeeded, failed)
+
+Alternativas:
+- redis lock → complejidad + riesgo expiración
+- deduplicación eventual → permite duplicados temporales
+- cola única → cuello de botella
+
+Razón:
+DB resuelve concurrencia de forma atómica (ACID) sin coordinación externa
+
+Consecuencias:
++ evita duplicados en persistencia
++ arquitectura más simple
+- contención en hot keys
+- manejo de errores por constraint
+- estados intermedios obligatorios
+
+Trigger:
+
+
